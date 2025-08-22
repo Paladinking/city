@@ -9,6 +9,10 @@ typedef struct Polygon {
     b2Vec2 points[];
 } Polygon;
 
+
+extern void indented_polygon(const b2Vec2* points, uint32_t count, float width, 
+                             b2Vec2* dest);
+
 extern Polygon* Polygon_create(b2WorldId world, const b2Vec2* points, 
                                int n_points, b2Transform t);
 

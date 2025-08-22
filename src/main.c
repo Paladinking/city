@@ -5,41 +5,34 @@
 #include <box2d/box2d.h>
 #include <stdio.h>
 
+#include "types.h"
 #include "polygon.h"
+#include "list.h"
+#include "render.h"
+#include "serialize.h"
 
-#define PIXEL_SCALE 8.0f
-#define UNIT_PIXEL_X(coord, cam) (((coord) * 8.0f) * (cam).scale + (cam).pos.x)
-#define UNIT_PIXEL_Y(coord, cam) (((coord) * 8.0f) * (cam).scale + (cam).pos.y)
-#define VEC_PIXEL_X(coord, cam) (((coord).x * 8.0f) * (cam).scale + (cam).pos.x)
-#define VEC_PIXEL_Y(coord, cam) (((coord).y * 8.0f) * (cam).scale + (cam).pos.y)
-#define PIXEL_UNIT_X(coord, cam) (((coord) - (cam).pos.x) / (8.0f * (cam).scale))
-#define PIXEL_UNIT_Y(coord, cam) (((coord) - (cam).pos.y) / (8.0f * (cam).scale))
-#define PIXEL_VEC_X(coord, cam) (((coord).x - (cam).pos.x) / (8.0f * (cam).scale))
-#define PIXEL_VEC_Y(coord, cam) (((coord).y - (cam).pos.y) / (8.0f * (cam).scale))
-#define UNIT_LENGTH_PIXEL_X(coord, cam) ((coord) * 8.0f * (cam).scale)
-#define UNIT_LENGTH_PIXEL_Y(coord, cam) ((coord) * 8.0f * (cam).scale)
-
-#define TILE_W 16
-#define TILE_H 11
-
-typedef struct Camera {
-    b2Vec2 pos;
-    float scale;
-} Camera;
 
 typedef struct GameState {
     b2WorldId worldId;
 
     uint64_t stamp;
 
-    Polygon** polygons;
-    int poly_count;
+    Polygon** collisions;
+    Storage col_storage;
 
-    b2Vec2* selected;
+    LineSet* lines;
+    Storage lines_storage;
+
+    int64_t selected;
 
     Camera camera;
     b2Vec2 panning_start;
     bool panning;
+
+    b2Vec2* pending;
+    Storage pending_storage;
+
+    uint32_t visibilty;
 
     SDL_Renderer* renderer;
 
@@ -48,34 +41,107 @@ typedef struct GameState {
     SDL_Texture* tiles[TILE_W * TILE_H];
 } GameState;
 
-
-static GameState gGame;
-
 void render_polygon(SDL_Renderer* renderer, Polygon* poly, SDL_Color color, Camera camera) {
-    SDL_assert(poly->count >= 3);
-    SDL_Vertex* verts = alloca(poly->count * sizeof(SDL_Vertex));
-    int* indicies = alloca(3 * (poly->count - 2) * sizeof(int));
-
     b2Transform t = b2Body_GetTransform(poly->body);
 
-    for (uint32_t ix = 0; ix < poly->count; ++ix) {
-        verts[ix].color.r = color.r / 255.0f;
-        verts[ix].color.g = color.g / 255.0f;
-        verts[ix].color.b = color.b / 255.0f;
-        verts[ix].color.a = color.a / 255.0f;
+    render_polygon_shape(renderer, poly->points, poly->count, 
+                         t, color, camera);
 
-        b2Vec2 v = b2TransformPoint(t, poly->points[ix]);
-        verts[ix].position.x = VEC_PIXEL_X(v, camera);
-        verts[ix].position.y = VEC_PIXEL_Y(v, camera);
-    }
-
-    for (uint32_t ix = 1; ix < poly->count - 1; ++ix) {
-        indicies[(ix - 1) * 3] = 0;
-        indicies[(ix - 1) * 3 + 1] = ix;
-        indicies[(ix - 1) * 3 + 2] = ix + 1;
-    }
-    SDL_RenderGeometry(renderer, NULL, verts, poly->count, indicies, 3 * (poly->count - 2));
+    b2Vec2* inner = alloca(poly->count * sizeof(b2Vec2));
+    indented_polygon(poly->points, poly->count, 0.4, inner);
+    color = (SDL_Color){0, 0, 0, 255};
+    render_polygon_shape(renderer, inner, poly->count,
+                         t, color, camera);
 }
+
+
+void render_game(GameState* g) {
+    SDL_SetRenderDrawColor(g->renderer, 0x0, 0x0, 0x0, 0xff);
+    SDL_RenderClear(g->renderer);
+
+    Camera cam = g->camera;
+
+    if (g->visibilty & SHOW_MAP) {
+        float tx = UNIT_PIXEL_X(0.0, cam);
+        float ty = UNIT_PIXEL_Y(0.0, cam);
+        float tw = UNIT_LENGTH_PIXEL_X(64.0, cam);
+        float th = UNIT_LENGTH_PIXEL_Y(64.0, cam);
+
+        for (uint32_t x = 1; x < TILE_W; ++x) {
+            for (uint32_t y = 0; y < TILE_H; ++y) {
+                SDL_FRect r = {tx + (x - 1) * tw, ty + y * th, tw, th};
+                SDL_Texture* tex = g->tiles[x + TILE_W * y];
+                SDL_RenderTexture(g->renderer, tex, NULL, &r);
+            }
+        }
+    }
+    
+    if (g->visibilty & SHOW_POLYGONS) {
+        for (uint64_t ix = 0; ix < g->col_storage.size; ++ix) {
+            SDL_Color color = {255, 150 + 10 * ix, 255, 255};
+            render_polygon(g->renderer, g->collisions[ix], color, cam);
+        }
+    }
+    if (g->visibilty & SHOW_LINES) {
+        for (uint64_t ix = 0; ix < g->lines_storage.size; ++ix) {
+            SDL_Color color = {255, 255, 255, 255};
+            render_lines(g->renderer, g->lines[ix].points, 
+                         g->lines[ix].len, color, 0.1f, cam);
+        }
+    }
+
+    if (g->visibilty & SHOW_PENDING) {
+        SDL_Color color = {255, 255, 255, 255};
+        render_lines(g->renderer, g->pending, g->pending_storage.size,
+                     color, 0.1f, cam);
+    }
+
+    if (g->visibilty & SHOW_CORNERS) {
+        SDL_SetRenderDrawColor(g->renderer, 200, 50, 50, 100);
+        for (uint32_t ix = 0; ix < g->lines_storage.size; ++ix) {
+            LineSet* l = &g->lines[ix];
+            for (uint32_t j = 0; j < l->len; ++j) {
+                SDL_FRect r = {UNIT_PIXEL_X(l->points[j].x - CORNER_RAD, cam),
+                               UNIT_PIXEL_Y(l->points[j].y - CORNER_RAD, cam),
+                               UNIT_LENGTH_PIXEL_X(2 * CORNER_RAD, cam),
+                               UNIT_LENGTH_PIXEL_Y(2 * CORNER_RAD, cam)};
+
+                SDL_RenderFillRect(g->renderer, &r);
+            }
+            
+        }
+
+        if (g->selected >= 0) {
+            LineSet* sel = &g->lines[g->selected];
+            SDL_SetRenderDrawColor(g->renderer, 50, 200, 50, 100);
+            for (uint32_t ix = 0; ix < sel->len; ++ix) {
+                SDL_FRect r = {UNIT_PIXEL_X(sel->points[ix].x - CORNER_RAD, cam),
+                               UNIT_PIXEL_Y(sel->points[ix].y - CORNER_RAD, cam),
+                               UNIT_LENGTH_PIXEL_X(2 * CORNER_RAD, cam),
+                               UNIT_LENGTH_PIXEL_Y(2 * CORNER_RAD, cam)};
+                SDL_RenderFillRect(g->renderer, &r);
+            }
+        }
+    }
+
+    SDL_RenderPresent(g->renderer);
+}
+
+LineSet* find_close_corner(GameState* g, b2Vec2* vec, uint32_t min_ix) {
+    for (uint32_t ix = min_ix; ix < g->lines_storage.size; ++ix) {
+        LineSet* l = &g->lines[ix];
+        for (uint32_t j = 0; j < l->len; ++j) {
+            if (SDL_abs(vec->x - l->points[j].x) < CORNER_RAD &&
+                SDL_abs(vec->y - l->points[j].y) < CORNER_RAD) {
+                *vec = l->points[j];
+                return l;
+            }
+        }
+    }
+    return NULL;
+}
+
+static GameState gGame;
 
 void mainloop() {
     SDL_Event e;
@@ -88,29 +154,84 @@ void mainloop() {
             if (e.key.key == SDLK_ESCAPE) {
                 gGame.running = false;
                 break;
+            } else if (e.key.key == SDLK_Z && (e.key.mod & SDL_KMOD_CTRL)) {
+                if (gGame.pending_storage.size > 0) {
+                    gGame.pending_storage.size--;
+                }
+            } else if (e.key.key == SDLK_S && (e.key.mod & SDL_KMOD_CTRL)) {
+                write_world(gGame.lines, gGame.lines_storage.size);
+            } else if (e.key.key == SDLK_RETURN && gGame.pending_storage.size > 2) {
+                uint32_t n_points = gGame.pending_storage.size;
+                b2Vec2* points = SDL_malloc(n_points * sizeof(b2Vec2));
+                SDL_assert_release(points != NULL);
+                SDL_memcpy(points, gGame.pending, n_points * sizeof(b2Vec2));
+                LineSet l = {n_points, points};
+                LIST_APPEND(gGame.lines, gGame.lines_storage, l);
+                gGame.pending_storage.size = 0;
+            } else if (e.key.key == SDLK_DELETE) {
+                if (gGame.selected >= 0) {
+                    SDL_free(gGame.lines[gGame.selected].points);
+                    gGame.lines[gGame.selected] = gGame.lines[gGame.lines_storage.size - 1];
+                    --gGame.lines_storage.size;
+                    gGame.selected = -1;
+                }
+            } else if (e.key.key == SDLK_1) {
+                gGame.visibilty ^= SHOW_MAP;
+            } else if (e.key.key == SDLK_2) {
+                gGame.visibilty ^= SHOW_CORNERS;
+            } else if (e.key.key == SDLK_3) {
+                gGame.visibilty ^= SHOW_LINES;
+            } else if (e.key.key == SDLK_4) {
+                gGame.visibilty ^= SHOW_POLYGONS;
+            } else if (e.key.key == SDLK_5) {
+                gGame.visibilty ^= SHOW_PENDING;
+            } else if (e.key.key == SDLK_LEFT) {
+                gGame.camera.pos.x += 8.0f;
+            } else if (e.key.key == SDLK_RIGHT) {
+                gGame.camera.pos.x -= 8.0f;
+            } else if (e.key.key == SDLK_UP) {
+                gGame.camera.pos.y += 8.0f;
+            } else if (e.key.key == SDLK_DOWN) {
+                gGame.camera.pos.y -= 8.0f;
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (e.button.button == SDL_BUTTON_LEFT) {
+            if (e.button.button == SDL_BUTTON_LEFT ||
+                e.button.button == SDL_BUTTON_MIDDLE) {
                 b2Vec2 vec = {PIXEL_UNIT_X(e.button.x, gGame.camera),
                               PIXEL_UNIT_Y(e.button.y, gGame.camera)};
 
                 gGame.panning_start = (b2Vec2){e.button.x, e.button.y};
                 gGame.panning = true;
+            } else if (e.button.button == SDL_BUTTON_RIGHT) {
+                int64_t min_ix = gGame.selected;
+                gGame.selected = -1;
+                b2Vec2 vec = {PIXEL_UNIT_X(e.button.x, gGame.camera),
+                              PIXEL_UNIT_Y(e.button.y, gGame.camera)};
+                LineSet* l = find_close_corner(&gGame, &vec, min_ix + 1);
+                if (l != NULL) {
+                    gGame.selected = l - gGame.lines;
+                }
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
             if (e.button.button == SDL_BUTTON_LEFT) {
-                gGame.selected = NULL;
+                if (gGame.panning && gGame.panning_start.x == e.button.x &&
+                    gGame.panning_start.y == e.button.y) {
+                    b2Vec2 vec = {PIXEL_UNIT_X(e.button.x, gGame.camera),
+                                  PIXEL_UNIT_Y(e.button.y, gGame.camera)};
+                    if (gGame.visibilty & SHOW_CORNERS) {
+                        find_close_corner(&gGame, &vec, 0);
+                    }
+                    LIST_APPEND(gGame.pending, gGame.pending_storage, vec);
+                }
+                gGame.panning = false;
+            } else if (e.button.button == SDL_BUTTON_MIDDLE) {
                 gGame.panning = false;
             }
             break;
         case SDL_EVENT_MOUSE_MOTION:
-            if (gGame.selected != NULL) {
-                b2Vec2 vec = {PIXEL_UNIT_X(e.motion.x, gGame.camera),
-                              PIXEL_UNIT_Y(e.motion.y, gGame.camera)};
-                *gGame.selected = vec;
-            } else if (gGame.panning) {
+            if (gGame.panning) {
                 gGame.camera.pos.x += e.motion.x - gGame.panning_start.x;
                 gGame.camera.pos.y += e.motion.y - gGame.panning_start.y;
                 gGame.panning_start = (b2Vec2){e.motion.x, e.motion.y};
@@ -150,29 +271,7 @@ void mainloop() {
         d -= timestep;
     }
 
-    SDL_SetRenderDrawColor(gGame.renderer, 0x0, 0x0, 0x0, 0xff);
-    SDL_RenderClear(gGame.renderer);
-
-    float tx = UNIT_PIXEL_X(0.0, gGame.camera);
-    float ty = UNIT_PIXEL_Y(0.0, gGame.camera);
-    float tw = UNIT_LENGTH_PIXEL_X(64.0, gGame.camera);
-    float th = UNIT_LENGTH_PIXEL_Y(64.0, gGame.camera);
-
-    for (uint32_t x = 1; x < TILE_W; ++x) {
-        for (uint32_t y = 0; y < TILE_H; ++y) {
-            SDL_FRect r = {tx + (x - 1) * tw,
-                           ty + y * th, tw, th};
-            SDL_Texture* tex = gGame.tiles[x + TILE_W * y];
-            SDL_RenderTexture(gGame.renderer, tex, NULL, &r);
-        }
-    }
-    
-    SDL_Color color = {150, 150, 150, 255};
-    for (uint64_t ix = 0; ix < gGame.poly_count; ++ix) {
-        render_polygon(gGame.renderer, gGame.polygons[ix], color, gGame.camera);
-    }
-
-    SDL_RenderPresent(gGame.renderer);
+    render_game(&gGame);
 }
 
 void run() {
@@ -202,28 +301,43 @@ int main() {
     gGame.renderer = renderer;
     gGame.camera = (Camera){{0.0, 0.0}, 2.0};
     gGame.stamp = SDL_GetTicks();
-    gGame.poly_count = 1;
-    gGame.polygons = SDL_malloc(sizeof(Polygon*) * 4);
-    b2Vec2 verts[] = {
-        {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}, {0.0, 0.0}
-    };
-    b2Transform t = {{0.0, 0.0}, {1.0, 0.0}};
+    gGame.selected = -1;
 
-    gGame.polygons[0] = Polygon_create(gGame.worldId, verts, 4, t);
+    LIST_CREATE(gGame.collisions, gGame.col_storage, Polygon*);
+    LIST_CREATE(gGame.pending, gGame.pending_storage, b2Vec2);
+    LIST_CREATE(gGame.lines, gGame.lines_storage, LineSet);
+
+    read_world(&gGame.lines, &gGame.lines_storage);
+
     gGame.running = true;
-    gGame.selected = NULL;
     gGame.panning = false;
+    gGame.visibilty = SHOW_MAP | SHOW_CORNERS | SHOW_LINES | 
+                      SHOW_PENDING | SHOW_POLYGONS;
 
     for (uint32_t x = 0; x < TILE_W; ++x) {
         for (uint32_t y = 0; y < TILE_H; ++y) {
             char filename[1024];
             sprintf(filename, "map/png/tile_%u_%u.png", x, y);
-            printf("Loading '%s'\n", filename);
-            gGame.tiles[x + TILE_W * y] = load_image(renderer, x, y);
+            SDL_Surface* s = IMG_Load(filename);
+            if (s == NULL) {
+                printf("Failed loading '%s': %s\n", filename, SDL_GetError());
+                return 1;
+            }
+            for (uint32_t px = 0; px < s->w; ++px) {
+                for (uint32_t py = 0; py < s->h; ++py) {
+                    uint8_t r, g, b, a;
+                    SDL_ReadSurfacePixel(s, px, py, &r, &g, &b, &a);
+
+                    SDL_WriteSurfacePixel(s, px, py, 255 - r, 255 - g, 255 - b, a);
+                }
+            }
+
+            gGame.tiles[x + TILE_W * y] = SDL_CreateTextureFromSurface(renderer, s);
             if (gGame.tiles[x + TILE_W * y] == NULL) {
                 printf("Failed loading '%s': %s\n", filename, SDL_GetError());
                 return 1;
             }
+            SDL_DestroySurface(s);
         }
     }
 

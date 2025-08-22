@@ -49,7 +49,7 @@ def main():
     img_obj = Object("images.obj", "src/images.c", includes=["tools"],
                      packages=packages, depends=[header.product])
 
-    src: List[Any] = ["src/main.c", "src/polygon.c"]
+    src: List[Any] = ["src/main.c", "src/polygon.c", "src/render.c", "src/serialize.c"]
 
     if backend().ecmascript:
         name = "city.js"

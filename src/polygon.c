@@ -1,7 +1,7 @@
 #include "polygon.h"
 #include "objects.h"
 
-#define POLYGON_MAX_SHAPES 16
+#define POLYGON_MAX_SHAPES 128
 
 int needed_verts(int n_points) {
     int count = n_points;
@@ -10,6 +10,43 @@ int needed_verts(int n_points) {
         count -= B2_MAX_POLYGON_VERTICES - 2;
     }
     return n_points;
+}
+
+b2Vec2 inner_vec(b2Vec2 prev, b2Vec2 cur, b2Vec2 next, float width) {
+    b2Vec2 v1 = b2Normalize(b2Sub(cur, prev));
+    b2Vec2 v2 = b2Normalize(b2Sub(next, cur));
+
+    b2Vec2 n1 = b2LeftPerp(v1);
+    b2Vec2 n2 = b2LeftPerp(v2);
+
+    b2Vec2 bisect = b2Normalize(b2Add(n1, n2));
+    float scale = 1.0f / b2Dot(bisect, n1);
+
+    float mlen = width * scale;
+
+    bisect = b2MulSV(mlen, bisect);
+
+    return b2Add(cur, bisect);
+}
+
+void indented_polygon(const b2Vec2* points, uint32_t count, float width, b2Vec2* dest) {
+    SDL_assert_release(count >= 3);
+    b2Vec2 prev = points[count - 2];
+    b2Vec2 cur = points[count - 1];
+    b2Vec2 next = points[0];
+
+    dest[count - 1] = inner_vec(prev, cur, next, width);
+
+    prev = points[count - 1];
+    cur = points[0];
+    next = points[1];
+    dest[0] = inner_vec(prev, cur, next, width);
+    for (uint32_t i = 1; i < count - 1; ++i) {
+        prev = points[i - 1];
+        cur = points[i];
+        next = points[i + 1];
+        dest[i] = inner_vec(prev, cur, next, width);
+    }
 }
 
 // This is simplified version of b2ComputePolygonMass that works for more than B2_MAX_POLYGON_VERTICES points.
@@ -61,10 +98,10 @@ Polygon* Polygon_create(b2WorldId world, const b2Vec2* points, int n_points, b2T
     }
 
     b2BodyDef bodyDef = b2DefaultBodyDef();
-    bodyDef.type = b2_dynamicBody;
+    bodyDef.type = b2_staticBody;
     bodyDef.position = t.p;
-    bodyDef.linearDamping = 0.2f;
-    bodyDef.angularDamping = 0.2f;
+    bodyDef.linearDamping = 0.0f;
+    bodyDef.angularDamping = 0.0f;
     b2Vec2 wold_center = b2RotateVector(t.q, center);
 
     bodyDef.position.x += wold_center.x;
