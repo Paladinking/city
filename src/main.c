@@ -223,7 +223,12 @@ void mainloop() {
                     gGame.pending_storage.size--;
                 }
             } else if (e.key.key == SDLK_S && (e.key.mod & SDL_KMOD_CTRL)) {
-                write_world(gGame.lines, gGame.lines_storage.size);
+                WorldData data;
+                data.lines = gGame.lines;
+                data.lines_store = gGame.lines_storage;
+                data.polys = gGame.polygons;
+                data.polys_store = gGame.polygon_storage;
+                write_world(&data);
             } else if (e.key.key == SDLK_RETURN && gGame.pending_storage.size > 2) {
                 uint32_t n_points = gGame.pending_storage.size;
                 b2Vec2* points = SDL_malloc(n_points * sizeof(b2Vec2));
@@ -412,9 +417,13 @@ int main() {
 
     LIST_CREATE(gGame.collisions, gGame.col_storage, Collider*);
     LIST_CREATE(gGame.pending, gGame.pending_storage, b2Vec2);
-    LIST_CREATE(gGame.lines, gGame.lines_storage, LineSet);
 
-    read_world(&gGame.lines, &gGame.lines_storage);
+    WorldData data;
+    read_world(&data);
+    gGame.lines = data.lines;
+    gGame.lines_storage = data.lines_store;
+    gGame.polygons = data.polys;
+    gGame.polygon_storage = data.polys_store;
 
     gGame.running = true;
     gGame.panning = false;
@@ -422,7 +431,6 @@ int main() {
                       SHOW_PENDING | SHOW_POLYGONS;
     gGame.collected = NULL;
     gGame.collected_size = 0;
-    LIST_CREATE(gGame.polygons, gGame.polygon_storage, Polygon);
 
     for (uint32_t x = 0; x < TILE_W; ++x) {
         for (uint32_t y = 0; y < TILE_H; ++y) {
@@ -450,22 +458,6 @@ int main() {
             SDL_DestroySurface(s);
         }
     }
-
-    uint8_t* visited = SDL_calloc(gGame.lines_storage.size, 1);
-    for (uint32_t ix = 0; ix < gGame.lines_storage.size; ++ix) {
-        uint32_t size;
-        Triangle* t = collect_corners(&gGame, gGame.lines[ix].points[0], 
-                                      &size, visited);
-        Polygon* polygons = triangles_to_polygons(t, size, &size);
-        SDL_free(t);
-        LIST_RESERVE_GROWTH(gGame.polygons, gGame.polygon_storage, size);
-        for (uint32_t ix = 0; ix < size; ++ix) {
-            gGame.polygons[gGame.polygon_storage.size + ix] = polygons[ix];
-        }
-        gGame.polygon_storage.size += size;
-        SDL_free(polygons);
-    }
-    SDL_free(visited);
 
     run();
 

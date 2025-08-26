@@ -2,10 +2,9 @@
 #define SERIALIZE_H_00
 
 #include "types.h"
-#include "list.h"
 
-void read_world(LineSet** lines, Storage* line_storage);
+void read_world(WorldData* data);
 
-void write_world(LineSet* lines, uint32_t line_count);
+void write_world(const WorldData* data);
 
 #endif
