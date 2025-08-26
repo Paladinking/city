@@ -37,17 +37,17 @@ def main():
     packages = [sdl3, sdl3_image, box2d]
 
 
-    embed = Executable("embed.exe", "embed.c")
+    #embed = Executable("embed.exe", "embed.c")
 
     imgs = [f"map/png/tile_{x}_{y}.png" for x in range(16) for y in range(11)]
     line = ' '.join(imgs)
 
-    header, obj = Command(["images.h", "images.obj"],
-                          f"{embed.product} -o tools/images.obj -H tools/images.h -s %f {line}",
-                          "embed.c", *imgs, directory="tools")
+    #header, obj = Command(["images.h", "images.obj"],
+    #                      f"{embed.product} -o tools/images.obj -H tools/images.h -s %f {line}",
+    #                      "embed.c", *imgs, directory="tools")
 
-    img_obj = Object("images.obj", "src/images.c", includes=["tools"],
-                     packages=packages, depends=[header.product])
+    #img_obj = Object("images.obj", "src/images.c", includes=["tools"],
+    #                 packages=packages, depends=[header.product])
 
     src: List[Any] = ["src/main.c", "src/polygon.c", "src/render.c", "src/serialize.c"]
 
@@ -61,7 +61,7 @@ def main():
         flags = ''
 
     CopyToBin(*sdl3.dlls, *sdl3_image.dlls, *box2d.dlls)
-    exe = Executable(name, *src, obj, img_obj, 
+    exe = Executable(name, *src,
                      packages=packages, extra_link_flags=flags)
     
     build(__file__)

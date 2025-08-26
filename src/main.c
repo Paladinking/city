@@ -4,6 +4,7 @@
 #include <SDL3_image/SDL_image.h>
 #include <box2d/box2d.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "types.h"
 #include "polygon.h"
@@ -17,13 +18,18 @@ typedef struct GameState {
 
     uint64_t stamp;
 
-    Polygon** collisions;
+    Collider** collisions;
     Storage col_storage;
 
     LineSet* lines;
     Storage lines_storage;
 
     int64_t selected;
+    Triangle* collected;
+    uint32_t collected_size;
+
+    Polygon* polygons;
+    Storage polygon_storage;
 
     Camera camera;
     b2Vec2 panning_start;
@@ -41,7 +47,7 @@ typedef struct GameState {
     SDL_Texture* tiles[TILE_W * TILE_H];
 } GameState;
 
-void render_polygon(SDL_Renderer* renderer, Polygon* poly, SDL_Color color, Camera camera) {
+void render_polygon(SDL_Renderer* renderer, Collider* poly, SDL_Color color, Camera camera) {
     b2Transform t = b2Body_GetTransform(poly->body);
 
     render_polygon_shape(renderer, poly->points, poly->count, 
@@ -56,7 +62,7 @@ void render_polygon(SDL_Renderer* renderer, Polygon* poly, SDL_Color color, Came
 
 
 void render_game(GameState* g) {
-    SDL_SetRenderDrawColor(g->renderer, 0x0, 0x0, 0x0, 0xff);
+    SDL_SetRenderDrawColor(g->renderer, 0x16, 0x16, 0x16, 0xff);
     SDL_RenderClear(g->renderer);
 
     Camera cam = g->camera;
@@ -77,9 +83,12 @@ void render_game(GameState* g) {
     }
     
     if (g->visibilty & SHOW_POLYGONS) {
-        for (uint64_t ix = 0; ix < g->col_storage.size; ++ix) {
-            SDL_Color color = {255, 150 + 10 * ix, 255, 255};
-            render_polygon(g->renderer, g->collisions[ix], color, cam);
+        SDL_Color c = {0, 0, 0, 255};
+        for (uint32_t ix = 0; ix < g->polygon_storage.size; ++ix) {
+            b2Transform t = b2Transform_identity;
+            render_polygon_shape(g->renderer, g->polygons[ix].points, g->polygons[ix].count,
+                                 t, c, g->camera);
+            //c.r += 25;
         }
     }
     if (g->visibilty & SHOW_LINES) {
@@ -122,23 +131,78 @@ void render_game(GameState* g) {
                 SDL_RenderFillRect(g->renderer, &r);
             }
         }
+
+        if (g->collected != NULL) {
+            SDL_Color c = {50, 200, 150, 100};
+            render_triangles(g->renderer, g->collected, g->collected_size, c, g->camera);
+        }
     }
 
     SDL_RenderPresent(g->renderer);
 }
 
-LineSet* find_close_corner(GameState* g, b2Vec2* vec, uint32_t min_ix) {
+static LineSet* find_close_corner(GameState* g, b2Vec2* vec, uint32_t min_ix) {
     for (uint32_t ix = min_ix; ix < g->lines_storage.size; ++ix) {
         LineSet* l = &g->lines[ix];
         for (uint32_t j = 0; j < l->len; ++j) {
-            if (SDL_abs(vec->x - l->points[j].x) < CORNER_RAD &&
-                SDL_abs(vec->y - l->points[j].y) < CORNER_RAD) {
+            float dx = SDL_fabsf(vec->x - l->points[j].x);
+            float dy = SDL_fabsf(vec->y - l->points[j].y);
+            if (dx < CORNER_RAD && dy < CORNER_RAD) {
                 *vec = l->points[j];
                 return l;
             }
         }
     }
     return NULL;
+}
+
+Triangle* collect_corners(GameState* g, b2Vec2 pos, uint32_t* size, uint8_t* visited) {
+    *size = 0;
+    b2Vec2* stack;
+    Storage store;
+
+    Triangle* dest;
+    Storage dest_store;
+
+    LIST_CREATE(dest, dest_store, Triangle);
+
+    LIST_CREATE(stack, store, b2Vec2);
+    LIST_APPEND(stack, store, pos);
+
+    while (store.size > 0) {
+        b2Vec2 v = stack[store.size - 1];
+        --store.size;
+        uint32_t n = 0;
+        while (1) {
+            b2Vec2 corner = v;
+            LineSet* lines = find_close_corner(g, &corner, n);
+            if (lines == NULL) {
+                break;
+            }
+            uint64_t ix = lines - g->lines;
+            n = ix + 1;
+            if (visited[ix]) {
+                continue;
+            }
+            visited[ix] = 1;
+            for (uint32_t i = 0; i < lines->len; ++i) {
+                LIST_APPEND(stack, store, lines->points[i]);
+            }
+            uint32_t count;
+            Triangle* t = lines_to_triangles(lines->points, lines->len, &count);
+            if (t != NULL) {
+                for (uint32_t ix = 0; ix < count; ++ix) {
+                    LIST_APPEND(dest, dest_store, t[ix]);
+                }
+                SDL_free(t);
+            }
+        }
+    }
+
+    LIST_FREE(stack, store);
+
+    *size = dest_store.size;
+    return dest;
 }
 
 static GameState gGame;
@@ -175,6 +239,31 @@ void mainloop() {
                     --gGame.lines_storage.size;
                     gGame.selected = -1;
                 }
+            } else if (e.key.key == SDLK_P) {
+                if (gGame.collected_size > 0 && gGame.collected != NULL) {
+                    uint32_t count;
+                    Polygon* poly = triangles_to_polygons(gGame.collected, 
+                            gGame.collected_size, &count);
+                    LIST_RESERVE_GROWTH(gGame.polygons, gGame.polygon_storage, count);
+                    for (uint32_t ix = 0; ix < count; ++ix) {
+                        gGame.polygons[gGame.polygon_storage.size + ix] = poly[ix];
+                    }
+                    gGame.polygon_storage.size += count;
+                    printf("Got polygons: %p, %u\n", poly, count);
+                    SDL_free(gGame.collected);
+                    SDL_free(poly);
+                    gGame.collected = NULL;
+                    gGame.collected_size = 0;
+                }
+            } else if (e.key.key == SDLK_T) {
+                if (gGame.selected > 0) {
+                    LineSet* l = &gGame.lines[gGame.selected];
+                    if (gGame.collected != NULL) {
+                        SDL_free(gGame.collected);
+                        gGame.collected_size = 0;
+                    }
+                    gGame.collected = lines_to_triangles(l->points, l->len, &gGame.collected_size);
+                }
             } else if (e.key.key == SDLK_1) {
                 gGame.visibilty ^= SHOW_MAP;
             } else if (e.key.key == SDLK_2) {
@@ -200,17 +289,35 @@ void mainloop() {
                 e.button.button == SDL_BUTTON_MIDDLE) {
                 b2Vec2 vec = {PIXEL_UNIT_X(e.button.x, gGame.camera),
                               PIXEL_UNIT_Y(e.button.y, gGame.camera)};
+                printf("Pressed %f, %f\n", vec.x, vec.y);
 
                 gGame.panning_start = (b2Vec2){e.button.x, e.button.y};
                 gGame.panning = true;
             } else if (e.button.button == SDL_BUTTON_RIGHT) {
-                int64_t min_ix = gGame.selected;
-                gGame.selected = -1;
+                if (gGame.collected != NULL) {
+                    SDL_free(gGame.collected);
+                    gGame.collected = NULL;
+                    gGame.collected_size = 0;
+                }
                 b2Vec2 vec = {PIXEL_UNIT_X(e.button.x, gGame.camera),
                               PIXEL_UNIT_Y(e.button.y, gGame.camera)};
-                LineSet* l = find_close_corner(&gGame, &vec, min_ix + 1);
-                if (l != NULL) {
-                    gGame.selected = l - gGame.lines;
+                const bool* keys = SDL_GetKeyboardState(NULL);
+                bool shift = keys[SDL_SCANCODE_RSHIFT] || keys[SDL_SCANCODE_LSHIFT];
+                if (shift) {
+
+                    uint8_t *visited = SDL_calloc(gGame.lines_storage.size, 1);
+                    SDL_assert_release(visited != NULL);
+                    gGame.collected = collect_corners(&gGame, vec, &gGame.collected_size,
+                                                      visited);
+                    SDL_free(visited);
+                    printf("%p: %u\n", gGame.collected, gGame.collected_size);
+                } else {
+                    int64_t min_ix = gGame.selected;
+                    gGame.selected = -1;
+                    LineSet* l = find_close_corner(&gGame, &vec, min_ix + 1);
+                    if (l != NULL) {
+                        gGame.selected = l - gGame.lines;
+                    }
                 }
             }
             break;
@@ -289,7 +396,7 @@ int main() {
 
     SDL_Renderer* renderer;
     SDL_Window* window;
-    if (!SDL_CreateWindowAndRenderer("City", 1920, 1089, SDL_WINDOW_BORDERLESS, &window, &renderer)) {
+    if (!SDL_CreateWindowAndRenderer("City", 1920, 1080, SDL_WINDOW_BORDERLESS, &window, &renderer)) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "Failed creating window: %s", SDL_GetError());
     }
 
@@ -303,7 +410,7 @@ int main() {
     gGame.stamp = SDL_GetTicks();
     gGame.selected = -1;
 
-    LIST_CREATE(gGame.collisions, gGame.col_storage, Polygon*);
+    LIST_CREATE(gGame.collisions, gGame.col_storage, Collider*);
     LIST_CREATE(gGame.pending, gGame.pending_storage, b2Vec2);
     LIST_CREATE(gGame.lines, gGame.lines_storage, LineSet);
 
@@ -313,6 +420,9 @@ int main() {
     gGame.panning = false;
     gGame.visibilty = SHOW_MAP | SHOW_CORNERS | SHOW_LINES | 
                       SHOW_PENDING | SHOW_POLYGONS;
+    gGame.collected = NULL;
+    gGame.collected_size = 0;
+    LIST_CREATE(gGame.polygons, gGame.polygon_storage, Polygon);
 
     for (uint32_t x = 0; x < TILE_W; ++x) {
         for (uint32_t y = 0; y < TILE_H; ++y) {
@@ -340,6 +450,22 @@ int main() {
             SDL_DestroySurface(s);
         }
     }
+
+    uint8_t* visited = SDL_calloc(gGame.lines_storage.size, 1);
+    for (uint32_t ix = 0; ix < gGame.lines_storage.size; ++ix) {
+        uint32_t size;
+        Triangle* t = collect_corners(&gGame, gGame.lines[ix].points[0], 
+                                      &size, visited);
+        Polygon* polygons = triangles_to_polygons(t, size, &size);
+        SDL_free(t);
+        LIST_RESERVE_GROWTH(gGame.polygons, gGame.polygon_storage, size);
+        for (uint32_t ix = 0; ix < size; ++ix) {
+            gGame.polygons[gGame.polygon_storage.size + ix] = polygons[ix];
+        }
+        gGame.polygon_storage.size += size;
+        SDL_free(polygons);
+    }
+    SDL_free(visited);
 
     run();
 

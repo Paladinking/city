@@ -3,6 +3,7 @@
 
 #include <box2d/box2d.h>
 #include <SDL3/SDL.h>
+#include "polygon.h"
 
 #define PIXEL_SCALE 8.0f
 #define UNIT_PIXEL_X(coord, cam) (((coord) * 8.0f) * (cam).scale + (cam).pos.x)
@@ -30,8 +31,11 @@ typedef struct Camera {
 } Camera;
 
 
-extern void render_lines(SDL_Renderer* renderer, b2Vec2* points, int n_points,
+extern void render_lines(SDL_Renderer* renderer, const b2Vec2* points, int n_points,
                          SDL_Color color, float width, Camera camera);
+
+extern void render_triangles(SDL_Renderer* renderer, const Triangle* triangles, int count,
+                             SDL_Color color, Camera camera);
 
 extern void render_polygon_shape(SDL_Renderer* renderer, b2Vec2* points, 
                                  int n_points, b2Transform t,

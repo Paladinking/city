@@ -1,21 +1,8 @@
 #include "render.h"
+#include "polygon.h"
 #include <stdbool.h>
 
-bool line_intersects(b2Vec2 pa1, b2Vec2 pa2, b2Vec2 pb1, b2Vec2 pb2, b2Vec2* intersect) {
-    double denom = (pa1.x - pa2.x) * (pb1.y - pb2.y) - (pa1.y - pa2.y) * (pb1.x - pb2.x);
-    if (denom == 0.0) {
-        return false;
-    }
-
-    double t = ((pa1.x - pb1.x) * (pb1.y - pb2.y) - (pa1.y - pb1.y) * (pb1.x - pb2.x)) / denom;
-    double u = -((pa1.x - pa2.x) * (pa1.y - pb1.y) - (pa1.y - pa2.y) * (pa1.x - pb1.x)) / denom;
-    intersect->x = pa1.x + t * (pa2.x - pa1.x);
-    intersect->y = pa1.y + t * (pa2.y - pa1.y);
-    return true;
-}
-
-
-void find_corner(b2Vec2 prev, b2Vec2 cur, b2Vec2 next, b2Vec2* p1, b2Vec2* p2, float width) {
+void find_close_corner(b2Vec2 prev, b2Vec2 cur, b2Vec2 next, b2Vec2* p1, b2Vec2* p2, float width) {
     b2Vec2 v1 = b2Normalize(b2Sub(cur, prev));
     b2Vec2 v2 = b2Normalize(b2Sub(next, cur));
 
@@ -42,7 +29,7 @@ void find_corner(b2Vec2 prev, b2Vec2 cur, b2Vec2 next, b2Vec2* p1, b2Vec2* p2, f
     }
 }
 
-void render_lines(SDL_Renderer* renderer, b2Vec2* points, int n_points,
+void render_lines(SDL_Renderer* renderer, const b2Vec2* points, int n_points,
                   SDL_Color color, float width, Camera camera) {
     SDL_FColor fcolor = {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
                          color.a / 255.0f};
@@ -99,7 +86,7 @@ void render_lines(SDL_Renderer* renderer, b2Vec2* points, int n_points,
     b2Vec2 c1, c2;
     verts[0].color = fcolor;
     verts[1].color = fcolor;
-    find_corner(prev, cur, next, &c1, &c2, width);
+    find_close_corner(prev, cur, next, &c1, &c2, width);
     verts[0].position = (SDL_FPoint) 
         {VEC_PIXEL_X(c1, camera), VEC_PIXEL_Y(c1, camera)};
     verts[1].position = (SDL_FPoint) 
@@ -111,7 +98,7 @@ void render_lines(SDL_Renderer* renderer, b2Vec2* points, int n_points,
         next = points[ix + 1];
         verts[2 * ix].color = fcolor;
         verts[2 * ix + 1].color = fcolor;
-        find_corner(prev, cur, next, &c1, &c2, width);
+        find_close_corner(prev, cur, next, &c1, &c2, width);
         verts[2 * ix].position = (SDL_FPoint)
             {VEC_PIXEL_X(c1, camera), VEC_PIXEL_Y(c1, camera)};
         verts[2 * ix + 1].position = (SDL_FPoint)
@@ -123,7 +110,7 @@ void render_lines(SDL_Renderer* renderer, b2Vec2* points, int n_points,
     next = points[0];
     verts[2 * (n_points - 1)].color = fcolor;
     verts[2 * (n_points - 1) + 1].color = fcolor;
-    find_corner(prev, cur, next, &c1, &c2, width);
+    find_close_corner(prev, cur, next, &c1, &c2, width);
     verts[2 * (n_points - 1)].position = (SDL_FPoint)
         {VEC_PIXEL_X(c1, camera), VEC_PIXEL_Y(c1, camera)};
     verts[2 * (n_points - 1) + 1].position = (SDL_FPoint)
@@ -174,4 +161,31 @@ void render_polygon_shape(SDL_Renderer* renderer, b2Vec2* points, int n_points, 
         indicies[(ix - 1) * 3 + 2] = ix + 1;
     }
     SDL_RenderGeometry(renderer, NULL, verts, n_points, indicies, 3 * (n_points - 2));
+}
+
+void render_triangles(SDL_Renderer* renderer, const Triangle* triangles, int count,
+                      SDL_Color color, Camera camera) {
+    SDL_Vertex* verts = alloca(count * 3 * sizeof(SDL_Vertex));
+
+    SDL_FColor fcolor = {color.r / 255.0f, color.g / 255.0f, color.b / 255.0f,
+                         color.a / 255.0f};
+    for (uint32_t ix = 0; ix < count; ++ix) {
+        verts[ix * 3].color = fcolor;
+        b2Vec2 v1 = triangles[ix].p1;
+        verts[ix * 3].position.x = VEC_PIXEL_X(v1, camera);
+        verts[ix * 3].position.y = VEC_PIXEL_Y(v1, camera);
+        b2Vec2 v2 = triangles[ix].p2;
+        verts[ix * 3 + 1].color = fcolor;
+        verts[ix * 3 + 1].position.x = VEC_PIXEL_X(v2, camera);
+        verts[ix * 3 + 1].position.y = VEC_PIXEL_Y(v2, camera);
+        b2Vec2 v3 = triangles[ix].p3;
+        verts[ix * 3 + 2].color = fcolor;
+        verts[ix * 3 + 2].position.x = VEC_PIXEL_X(v3, camera);
+        verts[ix * 3 + 2].position.y = VEC_PIXEL_Y(v3, camera);
+        fcolor.r += 0.25;
+        if (fcolor.r > 1.0) {
+            fcolor.r -= 1.0;
+        }
+    }
+    SDL_RenderGeometry(renderer, NULL, verts, count * 3, NULL, 0);
 }

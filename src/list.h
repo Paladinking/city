@@ -10,9 +10,9 @@ typedef struct Storage {
 
 #define LIST_APPEND(lst, storage, item) do {                                \
     if ((storage).size == (storage).capacity) {                             \
-        void* p = SDL_realloc((lst), (storage).size * 2 * sizeof(item));/*NOLINT(bugprone-sizeof-expression)*/ \
-        SDL_assert_release(p != NULL);                                    \
-        (lst) = p;                                                        \
+        void* list_p = SDL_realloc((lst), (storage).size * 2 * sizeof(item));/*NOLINT(bugprone-sizeof-expression)*/ \
+        SDL_assert_release(list_p != NULL);                                 \
+        (lst) = list_p;                                                     \
         (storage).capacity *= 2;                                            \
     }                                                                       \
     (lst)[(storage).size++] = (item);                                       \
@@ -26,11 +26,13 @@ typedef struct Storage {
 } while (0)
 
 #define LIST_RESERVE(lst, storage, count) if ((storage).capacity < (count)) { \
-    void* p = SDL_realloc((lst), (count) * sizeof(*lst)); /*NOLINT(bugprone-sizeof-expression)*/ \
-    SDL_assert_release(p != NULL);                                            \
-    (lst) = p;                                                                \
+    void* list_p = SDL_realloc((lst), (count) * sizeof(*lst)); /*NOLINT(bugprone-sizeof-expression)*/ \
+    SDL_assert_release(list_p != NULL);                                       \
+    (lst) = list_p;                                                           \
     (storage).capacity = (count);                                             \
 }
+
+#define LIST_RESERVE_GROWTH(lst, storage, count) LIST_RESERVE(lst, storage, (storage).size + (count))
 
 #define LIST_FREE(lst, storage) do {                                        \
     SDL_free(lst);                                                          \
